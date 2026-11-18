@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GTF5 激光光路仿真系统 (Collimation Logic)</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 自定义滑块样式 */
+        input[type=range] {
+            -webkit-appearance: none; 
+            background: transparent; 
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            background: #22d3ee; /* Cyan-400 */
+            margin-top: -8px;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(34, 211, 238, 0.5);
+            transition: transform 0.1s;
+        }
+        input[type=range]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #334155;
+            border-radius: 2px;
+        }
+        /* 闪烁动画 - 用于 Ref Energy 指示 */
+        @keyframes pulse-opacity {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .animate-pulse-fast {
+            animation: pulse-opacity 2s infinite;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-white font-sans flex flex-col items-center min-h-screen p-4">
+
+    <!-- 标题区 -->
+    <div class="w-full max-w-5xl mb-6 border-b border-slate-800 pb-4">
+        <div class="flex justify-between items-end">
+            <div>
+                <h1 class="text-2xl font-bold text-cyan-400">CO2 激光光路与 Collimation Mag. 仿真</h1>
+                <p class="text-slate-400 text-sm mt-1">
+                    基于 CO2 laser Mask, collimation and energy 关系的动态展示
+                </p>
+            </div>
+            <div class="text-right text-xs text-slate-500">
+                <p>Model: CO2 laser</p>
+                <p>Parameter: Collimation Value (120-1200)</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 1. 物理光路视图 (顶部核心视图) -->
+    <div class="w-full max-w-5xl relative mb-6">
+        <!-- 标签 -->
+        <div class="absolute top-2 left-2 z-10 bg-slate-900/80 px-3 py-1 rounded border border-cyan-900 text-xs text-cyan-300 shadow-lg backdrop-blur-sm">
+            <i class="fas fa-microscope"></i> 光路俯视图 (Optical Path)
+        </div>
+        
+        <!-- 画布 -->
+        <canvas id="pathCanvas" width="900" height="260" class="w-full bg-black rounded-lg border border-slate-700 shadow-2xl cursor-crosshair"></canvas>
+        
+        <!-- 动态透镜标签 (随透镜移动) -->
+        <div id="lensLabel" class="absolute text-center text-xs text-cyan-400 font-mono transition-all duration-75 pointer-events-none" style="top: 230px; transform: translateX(-50%);">
+            ▲<br>Collimation Lens
+        </div>
+
+        <!-- 传感器位置示意 -->
+        <div class="absolute top-[230px] right-[40px] text-center text-xs text-red-400 font-mono">
+            ▲<br>Processing Point<br>(Table Level)
+        </div>
+    </div>
+
+    <!-- 2. 控制台与数据面板 (下部区域) -->
+    <div class="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- 左侧：参数控制 (Operator Panel) - 占 4/12 -->
+        <div class="lg:col-span-4 bg-slate-800 p-6 rounded-xl border border-slate-700 flex flex-col h-full">
+            <h2 class="text-lg font-bold text-white mb-6 border-l-4 border-cyan-500 pl-3">参数设定 (Condition)</h2>
+            
+            <!-- Collimation Mag Control -->
+            <div class="mb-8 flex-grow">
+                <label class="flex justify-between mb-2">
+                    <span class="font-bold text-cyan-300">Collimation Mag.</span>
+                    <span id="colValDisplay" class="font-mono text-xl bg-slate-900 px-3 py-1 rounded text-cyan-300 border border-slate-600 shadow-inner">600.0</span>
+                </label>
+                <div class="relative w-full h-10 flex items-center mt-2">
+                    <input 
+                        id="colValInput"
+                        type="range" min="120" max="1200" step="1" 
+                        value="600"
+                        class="w-full z-10"
+                    />
+                    <!-- 标尺背景 -->
+                    <div class="absolute w-full h-full pointer-events-none top-4 opacity-40">
+                        <div class="flex justify-between text-[10px] text-slate-400 px-1 font-mono">
+                            <span>120</span>
+                            <span>600</span>
+                            <span>1200</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="bg-slate-900/50 p-3 rounded mt-3 text-xs text-slate-400 border border-slate-700/50">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="w-2 h-2 rounded-full bg-cyan-500"></span>
+                        <span>调整透镜物理位置 (非放大倍率)</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
+                        <span>单位: 0.1 unit</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mask Select -->
+            <div class="mb-2">
+                <label class="flex justify-between mb-3">
+                    <span class="font-bold text-pink-300">Mask Select (光圈)</span>
+                    <span id="maskNameDisplay" class="font-mono text-sm text-pink-300 bg-pink-900/30 px-2 py-0.5 rounded">MASK 2</span>
+                </label>
+                <div class="grid grid-cols-3 gap-2">
+                    <button onclick="setMask(1, 20)" class="mask-btn py-3 rounded-lg text-xs font-bold border transition-all duration-200 shadow-lg transform active:scale-95">Mask 1<br><span class="opacity-70 font-normal">Small</span></button>
+                    <button onclick="setMask(2, 40)" class="mask-btn py-3 rounded-lg text-xs font-bold border transition-all duration-200 shadow-lg transform active:scale-95">Mask 2<br><span class="opacity-70 font-normal">Std</span></button>
+                    <button onclick="setMask(3, 60)" class="mask-btn py-3 rounded-lg text-xs font-bold border transition-all duration-200 shadow-lg transform active:scale-95">Mask 3<br><span class="opacity-70 font-normal">Large</span></button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧：能量测量 (Energy Measurement) - 占 8/12 -->
+        <div class="lg:col-span-8 bg-slate-900 p-6 rounded-xl border border-slate-700 flex flex-col">
+            <div class="flex justify-between items-center mb-5 border-b border-slate-800 pb-3">
+                <div class="flex items-center gap-3">
+                    <h2 class="text-lg font-bold text-white border-l-4 border-red-500 pl-3">加工点能量 (Processing Point Energy)</h2>
+                    <span class="bg-red-900/30 text-red-400 text-[10px] px-2 py-0.5 rounded border border-red-900/50">Sensor @ Table Level</span>
+                </div>
+                <div class="text-xs text-slate-500">CO2 laser</div>
+            </div>
+
+            <div class="flex flex-col gap-6 h-full">
+                
+                <!-- 1. 实时能量分布图 (Profile) - 放大并置顶 -->
+                <div class="relative w-full h-48 bg-black rounded-lg border border-slate-700 shadow-inner overflow-hidden group">
+                    <div class="absolute top-2 left-2 z-10 flex gap-2">
+                        <span class="text-[10px] text-cyan-300 bg-black/70 px-2 py-1 rounded border border-slate-700">Beam Profile (光束截面)</span>
+                        <span id="profileStatus" class="text-[10px] text-green-400 bg-black/70 px-2 py-1 rounded border border-slate-700">Good Flatness</span>
+                    </div>
+                    <!-- Y轴标签 -->
+                    <div class="absolute left-1 top-1/2 -translate-y-1/2 text-[9px] text-slate-600 -rotate-90 origin-center pointer-events-none">Intensity (a.u.)</div>
+                    
+                    <canvas id="profileCanvas" width="600" height="192" class="w-full h-full"></canvas>
+                    
+                    <!-- X轴中心线提示 -->
+                    <div class="absolute bottom-0 left-1/2 w-px h-2 bg-slate-500"></div>
+                </div>
+
+                <!-- 2. 数据仪表盘 (Grid Layout) -->
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-slate-800/50 p-4 rounded-lg border border-slate-700/50">
+                    
+                    <!-- 读数 1 -->
+                    <div class="flex flex-col justify-between border-r border-slate-700/50 pr-2">
+                        <span class="text-[10px] text-slate-400 uppercase tracking-wider">Lens Position</span>
+                        <span id="lensPosMM" class="font-mono text-xl text-cyan-300">0.0<span class="text-xs ml-1 text-slate-500">mm</span></span>
+                    </div>
+
+                    <!-- 读数 2 -->
+                    <div class="flex flex-col justify-between border-r border-slate-700/50 pr-2">
+                        <span class="text-[10px] text-slate-400 uppercase tracking-wider">Beam Dia. (Mask)</span>
+                        <span id="beamDiaDisplay" class="font-mono text-xl text-yellow-300">--<span class="text-xs ml-1 text-slate-500">mm</span></span>
+                    </div>
+
+                    <!-- 读数 3 -->
+                    <div class="flex flex-col justify-between border-r border-slate-700/50 pr-2">
+                        <span class="text-[10px] text-slate-400 uppercase tracking-wider">Efficiency</span>
+                        <span id="efficiencyDisplay" class="font-mono text-xl text-green-400">--<span class="text-xs ml-1 text-slate-500">%</span></span>
+                    </div>
+
+                    <!-- 读数 4 (能量密度 + Ref Energy) -->
+                    <div class="flex flex-col justify-between pl-2 relative">
+                        <div class="flex justify-between items-baseline">
+                            <span class="text-[10px] text-slate-400 uppercase tracking-wider">Fluence</span>
+                            <span class="text-[9px] text-yellow-500 animate-pulse-fast">▼ Ref. Target</span>
+                        </div>
+                        <div class="flex items-end gap-1">
+                            <span id="fluenceVal" class="font-mono text-xl text-red-400 font-bold leading-none">--</span>
+                            <span class="text-[9px] text-slate-500 mb-0.5">unit</span>
+                        </div>
+                        
+                        <!-- 小能量条容器 -->
+                        <div class="relative w-full h-2 mt-2">
+                            <!-- 背景槽 -->
+                            <div class="absolute w-full h-full bg-slate-700 rounded-full overflow-hidden">
+                                <!-- 实际能量条 -->
+                                <div id="energyBar" class="h-full bg-gradient-to-r from-green-500 to-red-500 transition-all duration-300" style="width: 50%"></div>
+                            </div>
+                            
+                            <!-- Ref. Energy 游标 (黄色三角形) -->
+                            <div class="absolute top-0 h-3 w-0.5 bg-yellow-400 z-10 shadow-[0_0_5px_rgba(250,204,21,0.8)]" style="left: 70%; transform: translateY(-2px);"></div>
+                        </div>
+                        <div class="text-[8px] text-slate-500 mt-1 text-right">Adjust Collimation to match Ref.</div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- JavaScript 逻辑 -->
+    <script>
+        // --- 系统状态 ---
+        const state = {
+            collimationVal: 600, // Range: 120 - 1200 (Unit: 0.1 unit)
+            maskId: 2,
+            maskSize: 40, // Pixel size for simulation
+        };
+
+        // --- 物理常量映射 ---
+        const CONSTANTS = {
+            MIN_VAL: 120,
+            MAX_VAL: 1200,
+            // 布局坐标
+            SOURCE_X: 40,
+            LENS_START_X: 130, // 准直透镜起始位置
+            LENS_TRAVEL_PX: 100, // 准直透镜行程
+            MASK_X: 450,         // Mask 位置
+            FTHETA_X: 650,       // fTheta 透镜位置 (新增)
+            TARGET_X: 820,       // 工件/传感器位置
+            
+            // KEY FIX: 增大 Base Beam Width, 避免在 Min Collimation 时 Mask 失效
+            BASE_BEAM_WIDTH: 28,  // Was 15. Now 28 ensures it > Small Mask (20)
+            
+            MAX_EXPANSION_RATIO: 3.5, 
+            PROFILE_MAX_HEIGHT_PX: 140, 
+        };
+
+        // --- DOM ---
+        const els = {
+            colValInput: document.getElementById('colValInput'),
+            colValDisplay: document.getElementById('colValDisplay'),
+            maskNameDisplay: document.getElementById('maskNameDisplay'),
+            lensLabel: document.getElementById('lensLabel'),
+            lensPosMM: document.getElementById('lensPosMM'),
+            beamDiaDisplay: document.getElementById('beamDiaDisplay'),
+            efficiencyDisplay: document.getElementById('efficiencyDisplay'),
+            fluenceVal: document.getElementById('fluenceVal'),
+            energyBar: document.getElementById('energyBar'),
+            profileStatus: document.getElementById('profileStatus'),
+            pathCanvas: document.getElementById('pathCanvas'),
+            profileCanvas: document.getElementById('profileCanvas'),
+            maskBtns: document.querySelectorAll('.mask-btn')
+        };
+
+        // --- 核心计算逻辑 ---
+        function calculatePhysics() {
+            const { collimationVal, maskSize } = state;
+            
+            // 1. Value Mapping
+            const normalizedPos = (collimationVal - CONSTANTS.MIN_VAL) / (CONSTANTS.MAX_VAL - CONSTANTS.MIN_VAL);
+            
+            // 2. Lens Pos
+            const physicalPosMM = (collimationVal * 0.01).toFixed(2);
+            
+            // 3. Expansion
+            const expansionFactor = 1 + (CONSTANTS.MAX_EXPANSION_RATIO * normalizedPos);
+            const beamDiameterAtMask = CONSTANTS.BASE_BEAM_WIDTH * expansionFactor;
+
+            // 4. Fluence (Processing Point Energy)
+            // Note: This changes as expansion changes, proving it's NOT source energy.
+            const maxFluence = 1000; 
+            const fluence = maxFluence / (Math.pow(expansionFactor, 2));
+
+            // 5. Efficiency
+            const beamRadius = beamDiameterAtMask / 2;
+            const maskRadius = maskSize / 2;
+            let efficiency = 0;
+            if (beamRadius > 0) {
+                 efficiency = 1 - Math.exp(-2 * Math.pow(maskRadius/beamRadius, 2));
+            }
+
+            return {
+                normalizedPos,
+                physicalPosMM,
+                beamDiameterAtMask,
+                fluence,
+                efficiency,
+                expansionFactor
+            };
+        }
+
+        // --- 渲染：物理光路 (Path) ---
+        function drawPath() {
+            const ctx = els.pathCanvas.getContext('2d');
+            const w = els.pathCanvas.width;
+            const h = els.pathCanvas.height;
+            const cy = h / 2;
+            const phys = calculatePhysics();
+
+            ctx.clearRect(0, 0, w, h);
+
+            // 动态坐标
+            const lensX = CONSTANTS.LENS_START_X + (phys.normalizedPos * CONSTANTS.LENS_TRAVEL_PX);
+            const maskX = CONSTANTS.MASK_X;
+            const fThetaX = CONSTANTS.FTHETA_X;
+            const targetX = CONSTANTS.TARGET_X;
+            const sourceX = CONSTANTS.SOURCE_X;
+
+            // --- 1. 光源 (Oscillator) ---
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(sourceX - 30, cy - 25, 30, 50);
+            ctx.fillStyle = '#94a3b8'; ctx.font = '10px Arial'; ctx.fillText('Laser Unit', sourceX - 30, cy + 35);
+
+            // 原始光束 (Constant Source Power)
+            const grad1 = ctx.createLinearGradient(0, cy-10, 0, cy+10);
+            grad1.addColorStop(0, 'rgba(255,0,0,0)'); grad1.addColorStop(0.5, 'rgba(255,100,100,0.8)'); grad1.addColorStop(1, 'rgba(255,0,0,0)');
+            ctx.fillStyle = grad1;
+            ctx.beginPath();
+            ctx.moveTo(sourceX, cy - CONSTANTS.BASE_BEAM_WIDTH/2);
+            ctx.lineTo(lensX, cy - CONSTANTS.BASE_BEAM_WIDTH/2); 
+            ctx.lineTo(lensX, cy + CONSTANTS.BASE_BEAM_WIDTH/2);
+            ctx.lineTo(sourceX, cy + CONSTANTS.BASE_BEAM_WIDTH/2);
+            ctx.fill();
+
+            // --- 2. Collimation Lens (移动透镜) ---
+            // 导轨
+            ctx.strokeStyle = '#334155'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+            ctx.beginPath(); 
+            ctx.moveTo(CONSTANTS.LENS_START_X - 10, cy + 70); 
+            ctx.lineTo(CONSTANTS.LENS_START_X + CONSTANTS.LENS_TRAVEL_PX + 10, cy + 70);
+            ctx.stroke();
+            
+            // 透镜本体
+            ctx.beginPath();
+            ctx.ellipse(lensX, cy, 6, 45, 0, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(34, 211, 238, 0.2)'; 
+            ctx.strokeStyle = '#22d3ee';
+            ctx.lineWidth = 2;
+            ctx.fill(); ctx.stroke();
+            
+            // 支架
+            ctx.strokeStyle = '#64748b'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(lensX, cy + 45); ctx.lineTo(lensX, cy + 70); ctx.stroke();
+            els.lensLabel.style.left = (lensX / w * 100) + '%';
+
+            // --- 3. Expanded Beam (Collimation -> Mask) ---
+            const bd = phys.beamDiameterAtMask;
+            // 扩束越大，密度越低，颜色越淡 (Visualizing Energy Density)
+            const opacity = Math.max(0.1, 1 / (bd / CONSTANTS.BASE_BEAM_WIDTH));
+            
+            const grad2 = ctx.createLinearGradient(0, cy - bd/2, 0, cy + bd/2);
+            grad2.addColorStop(0, 'rgba(255,0,0,0)'); 
+            grad2.addColorStop(0.5, `rgba(255, 50, 50, ${opacity})`); 
+            grad2.addColorStop(1, 'rgba(255,0,0,0)');
+
+            ctx.fillStyle = grad2;
+            ctx.beginPath();
+            ctx.moveTo(lensX, cy - CONSTANTS.BASE_BEAM_WIDTH/2); // Approximation of lens effect
+            ctx.lineTo(maskX, cy - bd/2);
+            ctx.lineTo(maskX, cy + bd/2);
+            ctx.lineTo(lensX, cy + CONSTANTS.BASE_BEAM_WIDTH/2);
+            ctx.fill();
+
+            // --- 4. Mask (物理光阑) ---
+            const maskGap = state.maskSize;
+            ctx.fillStyle = '#334155'; 
+            ctx.fillRect(maskX, 10, 8, cy - 10 - maskGap/2);
+            ctx.fillRect(maskX, cy + maskGap/2, 8, h - 10 - (cy + maskGap/2));
+            
+            ctx.fillStyle = '#f472b6'; ctx.font = 'bold 12px Arial';
+            ctx.fillText(`MASK`, maskX - 10, 25);
+            ctx.fillStyle = '#94a3b8'; ctx.font = '10px Arial';
+            ctx.fillText(`${(maskGap/20).toFixed(1)}mm`, maskX - 10, 38); // Simulated mm size
+
+            // Reflection (Blocked energy at Mask)
+            if (bd > maskGap) {
+                ctx.fillStyle = 'rgba(255, 100, 0, 0.3)'; 
+                ctx.fillRect(maskX - 4, cy - bd/2, 4, (bd - maskGap)/2);
+                ctx.fillRect(maskX - 4, cy + maskGap/2, 4, (bd - maskGap)/2);
+            }
+
+            // --- 5. Clipped Beam (Mask -> fTheta Lens) ---
+            // 这部分光束被 Mask 截取，是平行的(或轻微发散)，直径等于 Mask 开口
+            const clippedW = Math.min(bd, maskGap);
+            const grad3 = ctx.createLinearGradient(0, cy - clippedW/2, 0, cy + clippedW/2);
+            grad3.addColorStop(0, 'rgba(255,0,0,0)'); 
+            grad3.addColorStop(0.5, `rgba(255, 100, 100, ${opacity})`); 
+            grad3.addColorStop(1, 'rgba(255,0,0,0)');
+
+            ctx.fillStyle = grad3;
+            ctx.beginPath();
+            ctx.moveTo(maskX + 8, cy - clippedW/2);
+            ctx.lineTo(fThetaX, cy - clippedW/2);
+            ctx.lineTo(fThetaX, cy + clippedW/2);
+            ctx.lineTo(maskX + 8, cy + clippedW/2);
+            ctx.fill();
+
+            // --- 6. fTheta Lens (聚焦镜) ---
+            ctx.beginPath();
+            // 凸透镜形状
+            ctx.ellipse(fThetaX, cy, 8, 50, 0, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(167, 139, 250, 0.2)'; // Purple tint
+            ctx.strokeStyle = '#a78bfa'; // Purple-400
+            ctx.lineWidth = 2;
+            ctx.fill(); ctx.stroke();
+            
+            ctx.fillStyle = '#a78bfa'; ctx.font = 'bold 11px Arial'; ctx.textAlign = 'center';
+            ctx.fillText(`fθ Lens`, fThetaX, cy - 60);
+            ctx.font = '9px Arial'; ctx.fillStyle = '#94a3b8';
+            ctx.fillText(`(Focusing)`, fThetaX, cy - 50);
+
+            // --- 7. Focused Beam (fTheta -> Workpiece) ---
+            // 这是一个汇聚光束，从 clippedW 汇聚到一个极小的点
+            const spotSizePixel = 2; // Representing um size visually
+            
+            const grad4 = ctx.createLinearGradient(0, cy - clippedW/2, 0, cy + clippedW/2);
+            grad4.addColorStop(0, 'rgba(255,0,0,0)'); 
+            // 汇聚后能量密度极高，颜色变亮
+            grad4.addColorStop(0.5, `rgba(255, 200, 200, ${opacity * 1.5})`); 
+            grad4.addColorStop(1, 'rgba(255,0,0,0)');
+
+            ctx.fillStyle = grad4;
+            ctx.beginPath();
+            ctx.moveTo(fThetaX, cy - clippedW/2);
+            ctx.lineTo(targetX, cy - spotSizePixel);
+            ctx.lineTo(targetX, cy + spotSizePixel);
+            ctx.lineTo(fThetaX, cy + clippedW/2);
+            ctx.fill();
+
+            // --- 8. Processing Point (Workpiece/Sensor) ---
+            ctx.fillStyle = '#475569';
+            ctx.fillRect(targetX, cy - 40, 10, 80);
+            ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; 
+            ctx.fillText('Workpiece', targetX + 5, cy - 45);
+
+            // Impact Point (High intensity spot)
+            ctx.shadowBlur = 10; ctx.shadowColor = "rgba(255, 100, 100, 0.8)";
+            ctx.beginPath();
+            ctx.arc(targetX, cy, 3, 0, Math.PI*2);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+            ctx.shadowBlur = 0; // reset
+
+            // Dimensions Arrows
+            // Mask Size (mm)
+            drawDimension(ctx, maskX + 50, cy, clippedW, `D(mask)=${(clippedW/20).toFixed(1)}mm`, '#fff');
+            // Beam Size (Mask Input)
+            drawDimension(ctx, maskX - 40, cy, bd, `D(beam)`, '#fbbf24');
+            // Focused Spot (um)
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(targetX + 15, cy - 20); ctx.lineTo(targetX + 2, cy - 2);
+            ctx.stroke();
+            ctx.fillStyle = '#fff'; ctx.font = '10px Arial';
+            ctx.fillText(`${(clippedW * 1.5).toFixed(0)}μm (Spot)`, targetX + 18, cy - 22);
+        }
+
+        function drawDimension(ctx, x, cy, h, text, color) {
+            ctx.strokeStyle = color; ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x, cy - h/2); ctx.lineTo(x, cy + h/2);
+            const as = 3;
+            ctx.moveTo(x - as, cy - h/2 + as); ctx.lineTo(x, cy - h/2); ctx.lineTo(x + as, cy - h/2 + as);
+            ctx.moveTo(x - as, cy + h/2 - as); ctx.lineTo(x, cy + h/2); ctx.lineTo(x + as, cy + h/2 - as);
+            ctx.stroke();
+            ctx.fillStyle = color; ctx.font = '10px Arial'; ctx.textAlign = 'left';
+            ctx.fillText(text, x + 5, cy);
+        }
+
+        // --- 渲染：能量分布图 (Profile) ---
+        function drawProfile() {
+            const ctx = els.profileCanvas.getContext('2d');
+            const w = els.profileCanvas.width;
+            const h = els.profileCanvas.height;
+            const cy = w / 2;
+            const floor = h - 20;
+
+            const phys = calculatePhysics();
+            
+            ctx.clearRect(0, 0, w, h);
+            
+            // Grid Lines
+            ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(0, floor); ctx.lineTo(w, floor); ctx.stroke();
+            ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(cy, 0); ctx.lineTo(cy, floor); ctx.stroke();
+            ctx.setLineDash([]);
+
+            const sigma = phys.beamDiameterAtMask * 1.5; 
+            const peakH = 3150 / sigma; 
+
+            // 1. Mask Walls
+            const maskPx = state.maskSize * 1.5; 
+            const left = cy - maskPx/2;
+            const right = cy + maskPx/2;
+
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+            ctx.fillRect(0, 0, left, h);
+            ctx.fillRect(right, 0, w - right, h);
+
+            // 2. Clipped Beam (Energy that reaches Processing Point)
+            const gradient = ctx.createLinearGradient(0, floor - peakH, 0, floor);
+            gradient.addColorStop(0, 'rgba(34, 211, 238, 0.8)'); 
+            gradient.addColorStop(1, 'rgba(34, 211, 238, 0.2)');
+
+            ctx.fillStyle = gradient; 
+            ctx.beginPath();
+            const yEdge = peakH * Math.exp(-(maskPx/2 * maskPx/2)/(2*sigma*sigma));
+            ctx.moveTo(left, floor);
+            ctx.lineTo(left, floor - yEdge);
+            for (let x = left; x <= right; x++) {
+                const dx = x - cy;
+                const y = peakH * Math.exp(-(dx*dx)/(2*sigma*sigma));
+                ctx.lineTo(x, floor - y);
+            }
+            ctx.lineTo(right, floor);
+            ctx.closePath();
+            ctx.fill();
+            ctx.lineWidth = 2; ctx.strokeStyle = '#22d3ee'; ctx.stroke();
+
+            // 3. Ghost Beam
+            ctx.beginPath();
+            ctx.strokeStyle = '#cbd5e1'; 
+            ctx.lineWidth = 2; ctx.setLineDash([6, 4]);       
+            for (let x = 0; x < w; x++) {
+                const dx = x - cy;
+                const y = peakH * Math.exp(-(dx*dx)/(2*sigma*sigma));
+                if (y > 0.5) ctx.lineTo(x, floor - y);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // 4. Mask Edges
+            ctx.strokeStyle = '#f472b6'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(left, 0); ctx.lineTo(left, h); ctx.moveTo(right, 0); ctx.lineTo(right, h); ctx.stroke();
+
+            // Text Updates
+            const flatness = phys.beamDiameterAtMask / state.maskSize;
+            let statusText = "";
+            let statusColor = "";
+            if (flatness > 3.0) { statusText = "Excellent Flatness (平坦)"; statusColor = "text-green-400"; }
+            else if (flatness > 1.5) { statusText = "Good Flatness (良好)"; statusColor = "text-yellow-400"; }
+            else { statusText = "Gaussian Peak (尖顶)"; statusColor = "text-red-400"; }
+            els.profileStatus.innerText = statusText;
+            els.profileStatus.className = `text-[10px] bg-black/70 px-2 py-1 rounded border border-slate-700 ${statusColor}`;
+        }
+
+        // --- 交互逻辑 ---
+        function updateUI() {
+            const phys = calculatePhysics();
+            els.colValDisplay.innerText = state.collimationVal.toFixed(1);
+            els.lensPosMM.innerText = phys.physicalPosMM;
+            els.beamDiaDisplay.innerText = (phys.beamDiameterAtMask / 10).toFixed(1);
+            
+            const effPercent = (phys.efficiency * 100).toFixed(1);
+            els.efficiencyDisplay.innerText = effPercent;
+            els.efficiencyDisplay.className = `font-mono text-xl ${phys.efficiency > 0.5 ? 'text-green-400' : 'text-red-400'}`;
+
+            // Fluence Bar Logic
+            const fluencePercent = Math.min(100, (phys.fluence / 10)); 
+            els.energyBar.style.width = fluencePercent + '%';
+            if (fluencePercent > 80) els.energyBar.className = "h-full bg-red-600 shadow-[0_0_10px_rgba(220,38,38,0.5)]";
+            else if (fluencePercent > 40) els.energyBar.className = "h-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]";
+            else els.energyBar.className = "h-full bg-yellow-500";
+            
+            els.fluenceVal.innerText = phys.fluence.toFixed(0);
+
+            drawPath();
+            drawProfile();
+        }
+
+        window.setMask = function(id, size) {
+            state.maskId = id;
+            state.maskSize = size;
+            els.maskNameDisplay.innerText = `MASK ${id}`;
+            els.maskBtns.forEach((btn, idx) => {
+                if (idx + 1 === id) {
+                    btn.classList.add('bg-pink-900/40', 'border-pink-500', 'text-pink-200', 'ring-1', 'ring-pink-500');
+                    btn.classList.remove('border-slate-600', 'opacity-70');
+                } else {
+                    btn.classList.remove('bg-pink-900/40', 'border-pink-500', 'text-pink-200', 'ring-1', 'ring-pink-500');
+                    btn.classList.add('bg-slate-800', 'border-slate-600', 'opacity-70');
+                }
+            });
+            updateUI();
+        };
+
+        els.colValInput.addEventListener('input', (e) => {
+            state.collimationVal = parseInt(e.target.value);
+            updateUI();
+        });
+
+        window.addEventListener('resize', () => { drawPath(); drawProfile(); });
+        setMask(2, 40);
+
+    </script>
+</body>
+</html>
